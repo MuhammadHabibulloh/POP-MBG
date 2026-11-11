@@ -143,6 +143,10 @@ class MainActivity : AppCompatActivity() {
                 super.onPageFinished(view, url)
                 progressBar.visibility = View.GONE
                 swipeRefreshLayout.isRefreshing = false
+                // Tambahkan tombol "Pilih dari Galeri" pada modal kamera POP SIPGN.
+                if (url?.startsWith(TARGET_URL) == true) {
+                    injectSipgnGalleryScript()
+                }
             }
 
             override fun onReceivedError(
@@ -235,6 +239,15 @@ class MainActivity : AppCompatActivity() {
                 resultMsg?.sendToTarget()
                 return true
             }
+        }
+    }
+
+    private fun injectSipgnGalleryScript() {
+        try {
+            val script = assets.open("sipgn-gallery.js").bufferedReader().use { it.readText() }
+            webView.evaluateJavascript(script, null)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Script galeri gagal dimuat: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 

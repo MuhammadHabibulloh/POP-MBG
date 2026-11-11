@@ -69,3 +69,9 @@ Catatan: ini menangani alur unggah file HTML/WebView. Jika website membuka kamer
 - Tidak ada skrip yang menghapus atribut `capture` dari halaman.
 
 **Batasan penting:** screenshot DevTools sebelumnya menunjukkan `AppPhotoInput.vue: galleryEnabled false`. Jika tombol "Ambil Foto" pada situs menggunakan komponen Vue dengan kamera JavaScript dan tidak menyediakan input file, aplikasi Android tidak dapat secara universal memasukkan foto galeri ke dalam state internal komponen tersebut. Untuk mengaktifkan galeri pada modal yang sama, pemilik situs perlu mengaktifkan fitur `galleryEnabled` atau menyediakan alur unggah file. Revisi Android ini menyediakan pilihan galeri/kamera pada permintaan file WebView dan mempertahankan kamera inline.
+
+## Integrasi tombol Galeri pada modal kamera POP SIPGN
+
+Aplikasi memuat `app/src/main/assets/sipgn-gallery.js` setelah halaman POP SIPGN selesai dimuat. Script mencari elemen video dan tombol **Ambil**, lalu menambahkan tombol **Pilih dari Galeri** pada modal kamera. Foto yang dipilih ditampilkan sebagai stream dari canvas agar tombol **Ambil** bawaan halaman dapat mencoba menangkap preview tersebut.
+
+Catatan: teknik ini bergantung pada implementasi kamera di website. Jika komponen Vue menyimpan stream kamera asli secara terpisah atau mengambil foto dari track kamera asli, tombol galeri dapat muncul tetapi hasilnya belum tentu masuk ke formulir. Uji pada akun/perangkat uji terlebih dahulu. Perubahan pada aplikasi Android tidak mengubah kode website POP SIPGN.
