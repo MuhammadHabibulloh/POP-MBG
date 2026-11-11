@@ -1,201 +1,322 @@
 package id.go.bgn.popsipgn
 
 import android.Manifest
-import android.app.Activity
+import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
-import android.provider.MediaStore
+import android.os.Message
+import android.view.View
 import android.webkit.*
+import android.widget.ProgressBar
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import android.view.View
-import android.webkit.WebChromeClient.FileChooserParams
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
+/**
+ * WebView POP SIPGN.
+ * - Input unggah foto: pengguna dapat memilih Galeri atau Kamera.
+ * - Kamera JavaScript (getUserMedia): izin kamera diberikan hanya untuk origin POP SIPGN.
+ */
 class MainActivity : AppCompatActivity() {
+
     private lateinit var webView: WebView
-    private var fileCallback: ValueCallback<Array<Uri>>? = null
+    private lateinit var swipeRefreshLayout: SwipeRefreshLayout
+    private lateinit var progressBar: ProgressBar
+    private lateinit var errorLayout: View
+
+    private var filePathCallback: ValueCallback<Array<Uri>>? = null
     private var pendingCameraUri: Uri? = null
+    private lateinit var fileChooserLauncher: ActivityResultLauncher<Intent>
+
     private var pendingWebPermission: PermissionRequest? = null
+    private lateinit var cameraPermissionLauncher: ActivityResultLauncher<String>
 
-    private val cameraPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) {
-                pendingWebPermission?.let { request ->
-                    request.grant(request.resources)
-                    pendingWebPermission = null
-                }
-            } else {
-                pendingWebPermission?.deny()
-                pendingWebPermission = null
-                Toast.makeText(this, "Izin kamera tidak diberikan", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-    private val chooserLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            val callback = fileCallback
-            fileCallback = null
-
-            if (callback == null) return@registerForActivityResult
-
-            var results: Array<Uri>? = null
-            if (result.resultCode == Activity.RESULT_OK) {
-                val data = result.data
-                results = when {
-                    data?.clipData != null -> {
-                        val clip = data.clipData!!
-                        Array(clip.itemCount) { i -> clip.getItemAt(i).uri }
-                    }
-                    data?.data != null -> arrayOf(data.data!!)
-                    pendingCameraUri != null && File(
-                        cacheDir,
-                        "pop_camera_placeholder"
-                    ).exists() -> arrayOf(pendingCameraUri!!)
-                    // Camera apps commonly return RESULT_OK with a null Intent when EXTRA_OUTPUT is used.
-                    pendingCameraUri != null -> arrayOf(pendingCameraUri!!)
-                    else -> null
-                }
-            }
-            callback.onReceiveValue(results)
-            pendingCameraUri = null
-        }
+    companion object {
+        const val TARGET_URL = "https://pop-sipgn.bgn.go.id/"
+        const val USER_AGENT_SUFFIX = " POPSIPGN-WebView/1.1"
+        const val FILE_PROVIDER_SUFFIX = ".fileprovider"
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        webView = WebView(this)
-        setContentView(webView)
+        setContentView(R.layout.activity_main)
+        initViews()
+        setupLaunchers()
+        setupWebView()
+        setupBackNavigation()
+        webView.loadUrl(TARGET_URL)
+    }
 
-        webView.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            loadsImagesAutomatically = true
-            allowFileAccess = false
-            javaScriptCanOpenWindowsAutomatically = true
-            mediaPlaybackRequiresUserGesture = true
-            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+    private fun initViews() {
+        webView = findViewById(R.id.webView)
+        swipeRefreshLayout = findViewById(R.id.swipeRefreshLayout)
+        progressBar = findViewById(R.id.progressBar)
+        errorLayout = findViewById(R.id.errorLayout)
+
+        findViewById<View>(R.id.btnRetry)?.setOnClickListener {
+            errorLayout.visibility = View.GONE
+            webView.reload()
+        }
+        swipeRefreshLayout.setOnRefreshListener { webView.reload() }
+    }
+
+    private fun setupLaunchers() {
+        fileChooserLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            val callback = filePathCallback
+            if (callback != null) {
+                val data = result.data
+                val clip = data?.clipData
+                val selected = if (result.resultCode == RESULT_OK) {
+                    when {
+                        clip != null -> Array(clip.itemCount) { clip.getItemAt(it).uri }
+                        data?.data != null -> arrayOf(data.data!!)
+                        pendingCameraUri != null -> arrayOf(pendingCameraUri!!)
+                        else -> null
+                    }
+                } else null
+                callback.onReceiveValue(selected)
+            }
+            filePathCallback = null
+            pendingCameraUri = null
         }
 
-        webView.webChromeClient = object : WebChromeClient() {
-            override fun onShowFileChooser(
-                view: WebView?,
-                callback: ValueCallback<Array<Uri>>?,
-                params: FileChooserParams?
-            ): Boolean {
-                fileCallback?.onReceiveValue(null)
-                fileCallback = callback
-                showCameraOrGalleryChooser(params)
-                return true
+        cameraPermissionLauncher = registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            val request = pendingWebPermission
+            pendingWebPermission = null
+            if (request != null) {
+                if (granted && isTrustedPopOrigin(request.origin)) {
+                    val videoResources = request.resources.filter {
+                        it == PermissionRequest.RESOURCE_VIDEO_CAPTURE
+                    }.toTypedArray()
+                    if (videoResources.isNotEmpty()) request.grant(videoResources)
+                    else request.deny()
+                } else {
+                    request.deny()
+                }
+            }
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun setupWebView() {
+        val settings = webView.settings
+        settings.javaScriptEnabled = true
+        settings.domStorageEnabled = true
+        settings.databaseEnabled = true
+        settings.allowFileAccess = true
+        settings.allowContentAccess = true
+        settings.mediaPlaybackRequiresUserGesture = false
+        settings.cacheMode = WebSettings.LOAD_DEFAULT
+        settings.setSupportZoom(true)
+        settings.builtInZoomControls = true
+        settings.displayZoomControls = false
+        settings.useWideViewPort = true
+        settings.loadWithOverviewMode = true
+        settings.userAgentString = settings.userAgentString + USER_AGENT_SUFFIX
+
+        CookieManager.getInstance().setAcceptCookie(true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                progressBar.visibility = View.VISIBLE
+                errorLayout.visibility = View.GONE
             }
 
-            override fun onPermissionRequest(request: PermissionRequest) {
-                runOnUiThread {
-                    val wantsCamera = request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
-                    if (wantsCamera &&
-                        ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA)
-                        != PackageManager.PERMISSION_GRANTED
-                    ) {
-                        pendingWebPermission = request
-                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                    } else {
-                        request.grant(request.resources)
-                    }
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                progressBar.visibility = View.GONE
+                swipeRefreshLayout.isRefreshing = false
+            }
+
+            override fun onReceivedError(
+                view: WebView?, request: WebResourceRequest?, error: WebResourceError?
+            ) {
+                super.onReceivedError(view, request, error)
+                if (request?.isForMainFrame == true) {
+                    progressBar.visibility = View.GONE
+                    swipeRefreshLayout.isRefreshing = false
+                    errorLayout.visibility = View.VISIBLE
                 }
             }
 
-            override fun onPermissionRequestCanceled(request: PermissionRequest) {
-                if (pendingWebPermission == request) pendingWebPermission = null
-            }
-        }
-
-        webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                val uri = request.url
-                return if (uri.scheme == "http" || uri.scheme == "https") {
-                    false
-                } else {
-                    try {
-                        startActivity(Intent(Intent.ACTION_VIEW, uri))
-                    } catch (_: Exception) {
-                        Toast.makeText(this@MainActivity, "Tautan tidak dapat dibuka", Toast.LENGTH_SHORT).show()
-                    }
+            override fun shouldOverrideUrlLoading(
+                view: WebView?, request: WebResourceRequest?
+            ): Boolean {
+                val uri = request?.url ?: return false
+                val scheme = uri.scheme.orEmpty()
+                if (scheme == "http" || scheme == "https") return false
+                return try {
+                    startActivity(Intent(Intent.ACTION_VIEW, uri))
+                    true
+                } catch (_: Exception) {
                     true
                 }
             }
         }
 
-        if (savedInstanceState == null) {
-            webView.loadUrl("https://pop-sipgn.bgn.go.id/")
-        } else {
-            webView.restoreState(savedInstanceState)
-        }
-    }
-
-    private fun showCameraOrGalleryChooser(params: FileChooserParams?) {
-        try {
-            val accept = params?.acceptTypes?.joinToString(",")?.lowercase(Locale.ROOT).orEmpty()
-            val imageOnly = accept.isBlank() || accept.contains("image") || accept.contains("*/*")
-
-            val galleryIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = if (imageOnly) "image/*" else params?.acceptTypes?.firstOrNull() ?: "*/*"
-                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, params?.mode == FileChooserParams.MODE_OPEN_MULTIPLE)
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                progressBar.progress = newProgress
+                if (newProgress == 100) progressBar.visibility = View.GONE
             }
 
-            val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-            if (cameraIntent.resolveActivity(packageManager) != null) {
-                val photoFile = createImageFile()
-                pendingCameraUri = FileProvider.getUriForFile(
-                    this, "$packageName.fileprovider", photoFile
-                )
-                cameraIntent.putExtra(MediaStore.EXTRA_OUTPUT, pendingCameraUri)
-                cameraIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            // Untuk <input type="file">: tampilkan pemilih foto dan aplikasi kamera.
+            override fun onShowFileChooser(
+                webView: WebView?,
+                callback: ValueCallback<Array<Uri>>?,
+                params: FileChooserParams?
+            ): Boolean {
+                filePathCallback?.onReceiveValue(null)
+                filePathCallback = callback
+                launchGalleryAndCamera(params)
+                return true
             }
 
-            val chooser = Intent(Intent.ACTION_CHOOSER).apply {
-                putExtra(Intent.EXTRA_INTENT, galleryIntent)
-                putExtra(Intent.EXTRA_TITLE, "Pilih foto")
-                if (pendingCameraUri != null) {
-                    putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
+            // Untuk kamera yang tampil langsung di halaman melalui getUserMedia().
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                if (request == null) return
+                runOnUiThread {
+                    if (!isTrustedPopOrigin(request.origin)) {
+                        request.deny()
+                        return@runOnUiThread
+                    }
+                    if (request.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)) {
+                        if (ContextCompat.checkSelfPermission(
+                                this@MainActivity, Manifest.permission.CAMERA
+                            ) == PackageManager.PERMISSION_GRANTED
+                        ) {
+                            request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+                        } else {
+                            pendingWebPermission?.deny()
+                            pendingWebPermission = request
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        }
+                    } else {
+                        request.deny()
+                    }
                 }
             }
-            chooserLauncher.launch(chooser)
-        } catch (e: Exception) {
-            fileCallback?.onReceiveValue(null)
-            fileCallback = null
-            pendingCameraUri = null
-            Toast.makeText(this, "Tidak dapat membuka kamera atau galeri", Toast.LENGTH_LONG).show()
+
+            override fun onPermissionRequestCanceled(request: PermissionRequest?) {
+                if (pendingWebPermission == request) pendingWebPermission = null
+            }
+
+            override fun onCreateWindow(
+                view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?
+            ): Boolean {
+                val newWebView = WebView(this@MainActivity)
+                newWebView.webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView?, request: WebResourceRequest?
+                    ): Boolean {
+                        webView.loadUrl(request?.url.toString())
+                        return true
+                    }
+                }
+                val transport = resultMsg?.obj as? WebView.WebViewTransport
+                transport?.webView = newWebView
+                resultMsg?.sendToTarget()
+                return true
+            }
         }
     }
 
-    private fun createImageFile(): File {
-        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        return File.createTempFile("POP_${stamp}_", ".jpg", cacheDir)
+    private fun isTrustedPopOrigin(origin: Uri): Boolean {
+        val host = origin.host?.lowercase() ?: return false
+        return host == "pop-sipgn.bgn.go.id" || host.endsWith(".pop-sipgn.bgn.go.id")
     }
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        webView.saveState(outState)
-        super.onSaveInstanceState(outState)
+    private fun launchGalleryAndCamera(params: WebChromeClient.FileChooserParams?) {
+        try {
+            val acceptTypes = params?.acceptTypes
+                ?.filter { it.isNotBlank() }
+                ?.flatMap { it.split(",") }
+                ?.map { it.trim().lowercase() }
+                .orEmpty()
+            val imageOnly = acceptTypes.isEmpty() ||
+                acceptTypes.any { it.startsWith("image/") || it == "image/*" }
+
+            val contentIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = if (imageOnly) "image/*" else "*/*"
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, params?.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE)
+            }
+
+            val initialIntents = if (imageOnly) {
+                createCameraIntent()?.let { arrayOf(it) } ?: emptyArray()
+            } else emptyArray()
+
+            val chooser = Intent.createChooser(contentIntent, "Pilih foto atau ambil foto").apply {
+                if (initialIntents.isNotEmpty()) {
+                    putExtra(Intent.EXTRA_INITIAL_INTENTS, initialIntents)
+                }
+            }
+            fileChooserLauncher.launch(chooser)
+        } catch (e: ActivityNotFoundException) {
+            filePathCallback?.onReceiveValue(null)
+            filePathCallback = null
+            Toast.makeText(this, "Aplikasi galeri tidak tersedia", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            filePathCallback?.onReceiveValue(null)
+            filePathCallback = null
+            Toast.makeText(this, "Tidak dapat membuka pilihan foto: ${e.message}", Toast.LENGTH_LONG).show()
+        }
     }
 
-    @Deprecated("Deprecated in Android API; retained for broad WebView compatibility")
-    override fun onBackPressed() {
-        if (::webView.isInitialized && webView.canGoBack()) webView.goBack()
-        else super.onBackPressed()
+    private fun createCameraIntent(): Intent? {
+        return try {
+            val photoFile = File.createTempFile("popsipgn_photo_", ".jpg", cacheDir)
+            val uri = FileProvider.getUriForFile(
+                this, packageName + FILE_PROVIDER_SUFFIX, photoFile
+            )
+            pendingCameraUri = uri
+            Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE).apply {
+                putExtra(android.provider.MediaStore.EXTRA_OUTPUT, uri)
+                clipData = ClipData.newRawUri("Foto POP SIPGN", uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }.takeIf { it.resolveActivity(packageManager) != null }
+        } catch (_: Exception) {
+            pendingCameraUri = null
+            null
+        }
+    }
+
+    private fun setupBackNavigation() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (webView.canGoBack()) webView.goBack()
+                else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        })
     }
 
     override fun onDestroy() {
-        fileCallback?.onReceiveValue(null)
-        fileCallback = null
-        webView.destroy()
+        filePathCallback?.onReceiveValue(null)
+        filePathCallback = null
+        pendingWebPermission?.deny()
+        pendingWebPermission = null
+        webView.stopLoading()
+        webView.clearHistory()
         super.onDestroy()
     }
 }

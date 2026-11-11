@@ -1,26 +1,71 @@
-# POP SIPGN Android (WebView)
+# POP SIPGN BGN - Android WebView APK
 
-Aplikasi Android sederhana yang membuka `https://pop-sipgn.bgn.go.id/` melalui WebView.
+Aplikasi Android WebView khusus untuk portal **https://pop-sipgn.bgn.go.id/** dengan fitur otomatis mengalihkan tombol kamera ke Galeri Foto HP.
 
-## Fitur
-- WebView dengan JavaScript dan DOM Storage aktif.
-- Tombol unggah foto pada halaman web memunculkan pemilih foto Android.
-- Pengguna dapat memilih foto dari Galeri/File Picker atau mengambil foto dengan Kamera.
-- Menangani permintaan kamera WebRTC dari halaman web melalui izin kamera Android.
-- Tombol Back kembali ke halaman sebelumnya.
+---
 
-## Cara membuka dan build
-1. Ekstrak ZIP ini.
-2. Buka folder `POP_SIPGN_Android` melalui Android Studio (Hedgehog atau lebih baru).
-3. Tunggu Gradle Sync dan pasang Android SDK 35 bila diminta.
-4. Hubungkan HP Android atau buat emulator.
-5. Pilih **Build > Build Bundle(s) / APK(s) > Build APK(s)**.
+## 🚀 Fitur Unggulan
 
-APK hasil build biasanya berada di `app/build/outputs/apk/debug/app-debug.apk`.
+1. **Pengalihan Kamera ke Galeri HP Otomatis:**
+   - Menimpa implementasi `WebChromeClient.onShowFileChooser`.
+   - Mengabaikan `MediaStore.ACTION_IMAGE_CAPTURE` (kamera hardware) dan langsung memanggil `Intent.ACTION_PICK` pada `MediaStore.Images.Media.EXTERNAL_CONTENT_URI` (Galeri HP).
+   - Injeksi JavaScript secara real-time untuk menghapus atribut `capture="camera"` pada form web.
+   - Dilengkapi `JavaScriptInterface` bernama `AndroidGallery.openGallery()`.
 
-## Catatan penting
-- Source ini tidak menyertakan APK karena APK perlu dibangun menggunakan Android SDK/Gradle di Android Studio.
-- Website tujuan memerlukan koneksi internet dan akun SIPGN yang sah.
-- Situs tujuan membatasi pengambilan halaman otomatis saat pemeriksaan, sehingga integrasi harus diuji langsung pada perangkat Android dengan akun dan alur unggah yang sebenarnya.
-- Jika situs memaksa mode kamera khusus melalui JavaScript `getUserMedia` dan bukan input unggah file, izin kamera WebView juga sudah ditangani; tampilan pemilih Galeri/Kamera berlaku untuk kontrol unggah file (`input type=file`).
-- Pengambilan foto dari kamera disimpan sementara di cache aplikasi dan diteruskan ke formulir web melalui URI FileProvider.
+2. **Perizinan Lengkap:**
+   - Mendukung Android 13/14/15 (`READ_MEDIA_IMAGES`).
+   - Mendukung Android 12 ke bawah (`READ_EXTERNAL_STORAGE`).
+
+3. **Optimasi WebView Pemerintah:**
+   - `network_security_config.xml` untuk kompatibilitas SSL domain `*.bgn.go.id`.
+   - CookieSync & DOM Storage aktif agar sesi login tersimpan.
+   - Pull to refresh dan penanganan tombol Back HP.
+
+---
+
+## 🛠️ Cara Build Menjadi APK
+
+### Cara 1: Menggunakan GitHub Actions (Otomatis & Tanpa Install Android Studio)
+1. Buat repository baru di GitHub (misal: `pop-sipgn-apk`).
+2. Upload seluruh isi folder project ini ke repository GitHub Anda.
+3. Buka tab **Actions** di GitHub repository Anda.
+4. Workflow `Build Android APK` akan berjalan secara otomatis dalam 2-3 menit.
+5. Setelah selesai, download file `.apk` yang sudah jadi di bagian **Artifacts**.
+
+### Cara 2: Menggunakan Android Studio (di Laptop/PC)
+1. Buka Android Studio.
+2. Pilih **File** > **Open**, lalu pilih folder project ini.
+3. Tunggu hingga Gradle Sync selesai.
+4. Klik menu **Build** > **Build Bundle(s) / APK(s)** > **Build APK(s)**.
+5. Setelah selesai, klik notifikasi **locate** di kanan bawah untuk mengambil file `app-debug.apk` atau `app-release.apk`.
+6. Transfer file `.apk` tersebut ke HP Android Anda dan instal.
+
+---
+
+## ⚙️ Detail Konfigurasi
+- **Nama Aplikasi:** POP SIPGN BGN
+- **Package ID:** `id.go.bgn.popsipgn`
+- **URL Target:** `https://pop-sipgn.bgn.go.id/`
+- **Mode Pengalihan:** `gallery_only`
+- **Versi:** 1.0.0 (Code: 1)
+
+
+## Perbaikan pemilihan foto (versi revisi)
+
+- Permintaan file dari HTML/WebView (`input type="file"`) membuka pemilih foto/dokumen Android.
+- Tidak meminta izin membaca seluruh galeri; pengguna hanya memberikan akses ke foto yang dipilih.
+- Mendukung pilihan satu foto atau beberapa foto jika pemilih perangkat mendukungnya.
+- Membatalkan pilihan foto akan menyelesaikan callback WebView dengan nilai kosong.
+- Atribut `capture` dihapus dari input file, termasuk input yang ditambahkan secara dinamis.
+
+Catatan: ini menangani alur unggah file HTML/WebView. Jika website membuka kamera melalui API kamera langsung (`getUserMedia`) atau tombol JavaScript khusus yang tidak memicu `input type="file"`, perubahan pada aplikasi saja tidak dapat mengubah alur itu menjadi unggah galeri secara universal. Bagian website tersebut perlu disesuaikan agar menggunakan input file/unggah foto.
+
+
+## Revisi kamera + galeri (1.1)
+
+- Untuk unggah melalui `input type=file`, dialog Android menawarkan Galeri dan Kamera.
+- Kamera yang berjalan langsung di halaman melalui `getUserMedia()` tetap ditangani WebView; izin kamera hanya diberikan kepada origin `pop-sipgn.bgn.go.id`.
+- Foto kamera eksternal disimpan sementara melalui `FileProvider`.
+- Tidak ada skrip yang menghapus atribut `capture` dari halaman.
+
+**Batasan penting:** screenshot DevTools sebelumnya menunjukkan `AppPhotoInput.vue: galleryEnabled false`. Jika tombol "Ambil Foto" pada situs menggunakan komponen Vue dengan kamera JavaScript dan tidak menyediakan input file, aplikasi Android tidak dapat secara universal memasukkan foto galeri ke dalam state internal komponen tersebut. Untuk mengaktifkan galeri pada modal yang sama, pemilik situs perlu mengaktifkan fitur `galleryEnabled` atau menyediakan alur unggah file. Revisi Android ini menyediakan pilihan galeri/kamera pada permintaan file WebView dan mempertahankan kamera inline.
